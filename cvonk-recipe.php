@@ -431,7 +431,7 @@ protected function showNutritionFacts($nutrition)
 }
 
 
-// generate HTML for the recipe from SQL $link identified by $id
+// generate HTML and JSON for the recipe from SQL $link identified by $id
 
 protected function showRecipe($link, $id) {
 
@@ -453,6 +453,9 @@ protected function showRecipe($link, $id) {
     $imagefile = str_replace('#', '%23', $imagefile);
     $imageurl = get_home_url(null, "/cvonk/recipe-images/" . $imagefile);
 
+    $json = [ "@context" => "http://schema.org/",
+	      "@type" => "Recipe",
+	      "name" => iconv("CP1252", "UTF-8", $row['title']) ];
     if (is_readable($imagepath)) {
 	$html .= "<div class='align-center'>\n  <figure>\n    <a class='hide-anchor' href='{$imageurl}'>" .
 		 "<img width='220' src='{$imageurl}' alt='' class='alignnone size-full' /></a>\n" .
@@ -461,10 +464,14 @@ protected function showRecipe($link, $id) {
     }
     if (!$this->isEmpty($row['notes'])) {
 	$html .= "<p>". iconv("CP1252", "UTF-8", $row['notes']). "</p>\n";
+	$json["description"] = iconv("CP1252", "UTF-8", $row['notes']);
+    } else {
+	$json["description"] = iconv("CP1252", "UTF-8", $row['title']);
     }
 
     $html .= "<table border='0'>\n";
-    $sqlArr = [ "source", "prep_time", "cook_time", "servings", "rating" ];
+    $sqlToJsonDict = [ "source" => "author", "prep_time" => "prepTime", "cook_time" => "cookTime",
+		       "servings" => "recipeYield", "rating" => "aggregateRating" ];
     // sources that inspired recipes
     $inspiration = ["Bon Appetit", "Cooking Light", "Eat, Drink and Be Healthy", "Field of greens", "Gourmet",
 		    "allrecipes.com", "epicurious.com", "fatsforhealth.com", "hermans.org", "hollandsepot.dordt.nl",
@@ -474,7 +481,7 @@ protected function showRecipe($link, $id) {
 		    "The Silver Palate", "Vegetarian Cooking", "Vegetarian Times", "Waring", "Weight Watchers",
 		    "Williams Sonoma"];
 
-    foreach( $sqlArr as $sqlKey ) {
+    foreach( $sqlToJsonDict as $sqlKey => $jsonKey ) {
 	switch($sqlKey) {
 	    case "source":
 		if( !$this->isEmpty($row[$sqlKey]) ) {
@@ -487,6 +494,7 @@ protected function showRecipe($link, $id) {
 			}
 		    }
 		    $html .= "  <tr><td>". ucwords($sqlKey). ":</td><td>". $name . "</td></tr>\n";
+		    $json[$jsonKey] = [ "@type" => "Person", "name" => $row[$sqlKey] ];
 		}
 		break;
 	    case "prep_time":
@@ -494,12 +502,16 @@ protected function showRecipe($link, $id) {
 		if (!$this->isEmpty($row[$sqlKey])) {
 		    $html .= "  <tr><td>". ucwords($sqlKey). ":</td><td>".
 			     iconv("CP1252", "UTF-8", $row[$sqlKey]). "</td></tr>\n";
+		    $json[$jsonKey] = $this->durationToISO8601($row[$sqlKey]);
 		}
 		break;
 	    case "rating":
 		if (!$this->isEmpty($row[$sqlKey])) {
 		    $html .= "  <tr><td>". ucwords($sqlKey). ":</td><td>".
 			     iconv("CP1252", "UTF-8", $row[$sqlKey]). "</td></tr>\n";
+		    $json["aggregateRating"] = [ "@type" => "AggregateRating",
+						 "ratingValue" => strlen($row[$sqlKey]),
+						 "reviewCount" => 2 ];
 		}
 		break;
 	    case "servings":
@@ -509,6 +521,7 @@ protected function showRecipe($link, $id) {
 		if (!$this->isEmpty($row[$sqlKey])) {
 		    $html .= "  <tr><td>". ucwords($sqlKey). ":</td><td>".
 			     iconv("CP1252", "UTF-8", $row[$sqlKey]). "</td></tr>\n";
+		    $json[$jsonKey] = iconv("CP1252", "UTF-8", $row[$sqlKey]);
 		}
 	}
     }
@@ -534,6 +547,8 @@ protected function showRecipe($link, $id) {
 	}
 	$html .= "  <tr><td>". $amount. "</td>".
 		 "<td>". iconv("CP1252", "UTF-8", $row['ingredient']) . "</td></tr>\n";
+	
+	$json["recipeIngredient"][] = $amount . " " . iconv("CP1252", "UTF-8", $row['ingredient']);
     }
     $html .= "</table>\n";
     
@@ -549,6 +564,7 @@ protected function showRecipe($link, $id) {
     while ($row = mysqli_fetch_array($queryresult, MYSQLI_ASSOC)) {
 	$direction = iconv("CP1252", "UTF-8", $row['direction']);
 	$html .= "  <tr><td valign='top'>" . $row['step'] . ".</td><td>". $direction . "</td></tr>\n";
+	$json["recipeInstructions"][] = $row["step"] . ". " . $direction;
     }
     $html .= "</table>\n";
 
@@ -564,34 +580,41 @@ protected function showRecipe($link, $id) {
 
     // show recipe nutrition facts
 
-    $sqlUnitDict = [ "Servings"        => [ "" ],
-		     "Calories"        => [ "" ],
-		     "Fat"             => [ "g" ],
-		     "Saturated Fat"   => [ "g" ],
-		     "Unsaturated Fat" => [ "g" ],
-		     "Cholesterol"     => [ "mg" ],
-		     "Sodium"          => [ "mg" ],
-		     "Carbohydrates"   => [ "g" ],
-		     "Fiber"           => [ "g" ],
-		     "Protein"         => [ "g" ] ];
+    $sqlToJsonDict = [ "Servings"        => [ "servingSize",           "" ],
+		       "Calories"        => [ "calories",              "" ],
+		       "Fat"             => [ "fatContent",            "g" ],
+		       "Saturated Fat"   => [ "saturatedFatContent",   "g" ],
+		       "Unsaturated Fat" => [ "unsaturatedFatContent", "g" ],
+		       "Cholesterol"     => [ "cholesterolContent",    "mg" ],
+		       "Sodium"          => [ "sodiumContent",         "mg" ],
+		       "Carbohydrates"   => [ "carbohydrateContent",   "g" ],
+		       "Fiber"           => [ "fiberContent",          "g" ],
+		       "Protein"         => [ "proteinContent",        "g" ] ];
     $count = 0;
     while ($row = mysqli_fetch_array($queryresult, MYSQLI_ASSOC)) {
 	if($count === 0) {
+	    $json["nutrition"]["@type"] = "NutritionInformation";
 	    if ($this->isEmpty($nutrition["ServingSize"])) {
 		$nutrition["ServingSize"] = "1 serving";
 	    }
+	    $json["nutrition"]["servingSize"] = $nutrition["ServingSize"];
 	}
 	$sqlKey = $row['nutrient'];
-	$unit = $sqlUnitDict[$sqlKey][0];
+	$jsonKey = $sqlToJsonDict[$sqlKey][0];
+	$unit = $sqlToJsonDict[$sqlKey][1];
 	$amount = iconv("CP1252", "UTF-8", $row['amount']);
 	$nutrition[$sqlKey] = $amount . $unit;
+	$json["nutrition"][$jsonKey] = $amount;
 	$count++;
     }
     if ($count) {
 	$html .= "<h3 class='nocount'>Nutrition</h3>\n";
 	$html .= $this->showNutritionFacts($nutrition);
     }    
-    return $html;
+    $json_str  = "\n<script type='application/ld+json'>\n";
+    $json_str .= json_encode($json, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);    
+    $json_str .= "\n</script>\n";
+    return $json_str . $html;
 }
 
 public function shortcode($atts) {
